@@ -1,6 +1,4 @@
 -- LocalScript: place in StarterPlayer > StarterPlayerScripts in your own experience.
--- Replace the sample ID with your Roblox UserId. Server-side admin actions still
--- need independent authorization on the server.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -13,11 +11,11 @@ local theme = {
 	AccentActive = Color3.fromRGB(34, 99, 81),
 	Text = Color3.fromRGB(239, 246, 243),
 	Muted = Color3.fromRGB(157, 177, 173),
+	Trigger = Color3.fromRGB(255, 220, 60),
 }
 
 local playerGui = localPlayer:WaitForChild("PlayerGui")
 
--- Re-run guard: destroy any previously created panel
 local existingPanel = playerGui:FindFirstChild("AdminPanel")
 if existingPanel then
 	existingPanel:Destroy()
@@ -31,6 +29,7 @@ screenGui.DisplayOrder = 10000
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 screenGui.Parent = playerGui
 
+-- Aim FOV circle (accent-colored)
 local aimFOVSize = 300
 local fovCircle = Instance.new("Frame")
 fovCircle.Name = "AimFOVCircle"
@@ -51,6 +50,27 @@ local fovStroke = Instance.new("UIStroke")
 fovStroke.Color = theme.Accent
 fovStroke.Thickness = 1
 fovStroke.Parent = fovCircle
+
+-- Trigger FOV circle (yellow) - visible whenever trigger bot is ON
+local triggerFOVCircle = Instance.new("Frame")
+triggerFOVCircle.Name = "TriggerFOVCircle"
+triggerFOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+triggerFOVCircle.Position = UDim2.fromScale(0.5, 0.5)
+triggerFOVCircle.Size = UDim2.fromOffset(30, 30)
+triggerFOVCircle.BackgroundTransparency = 1
+triggerFOVCircle.BorderSizePixel = 0
+triggerFOVCircle.Visible = false
+triggerFOVCircle.ZIndex = 1
+triggerFOVCircle.Parent = screenGui
+
+local triggerFOVCorner = Instance.new("UICorner")
+triggerFOVCorner.CornerRadius = UDim.new(1, 0)
+triggerFOVCorner.Parent = triggerFOVCircle
+
+local triggerFOVStroke = Instance.new("UIStroke")
+triggerFOVStroke.Color = theme.Trigger
+triggerFOVStroke.Thickness = 1.5
+triggerFOVStroke.Parent = triggerFOVCircle
 
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
@@ -132,13 +152,27 @@ local espEnabled = false
 local highlights = {}
 local infoEspEnabled = false
 local infoEspObjects = {}
-local skeletonEspEnabled = false
-local skeletonObjects = {}
 local squareEspEnabled = false
 local squareObjects = {}
 local showFOVEnabled = false
 local wallCheckEnabled = true
 local excludedUserIds = {}
+
+-- Trigger bot state
+local triggerBotEnabled = false
+local triggerBotFOV = 15
+local triggerBotDelay = 0
+local triggerBotNextFire = 0
+local triggerBotCooldown = 0.03
+
+-- Trigger bot keybinds
+local triggerToggleKey = Enum.KeyCode.T
+local triggerFOVUpKey = Enum.KeyCode.Equals
+local triggerFOVDownKey = Enum.KeyCode.Minus
+local waitingForTriggerToggleKey = false
+local waitingForTriggerFOVUpKey = false
+local waitingForTriggerFOVDownKey = false
+
 local currentAimTarget
 local movementWalkSpeed = 16
 local movementJumpPower = 50
@@ -154,7 +188,6 @@ local flyConnection
 local flyHumanoidStates = setmetatable({}, { __mode = "k" })
 local originalMovementDefaults
 
--- Panel visibility toggle state
 local panelVisible = true
 local panelToggleKey = Enum.KeyCode.RightShift
 local waitingForPanelToggleKey = false
@@ -230,13 +263,15 @@ end
 local espPage = createPage("ESPPage")
 espPage.Visible = true
 local aimPage = createPage("AimPage")
+local triggerPage = createPage("TriggerPage")
 local movementPage = createPage("MovementPage")
 local settingsPage = createPage("SettingsPage")
+local teleportPage = createPage("TeleportPage")
 
 local function createTabButton(name, positionX)
 	local button = Instance.new("TextButton")
 	button.Name = name .. "Tab"
-	button.Size = UDim2.fromOffset(60, 28)
+	button.Size = UDim2.fromOffset(38, 28)
 	button.Position = UDim2.fromOffset(positionX, 36)
 	button.BackgroundColor3 = theme.Surface
 	button.BorderSizePixel = 0
@@ -252,9 +287,11 @@ local function createTabButton(name, positionX)
 end
 
 local espTabButton = createTabButton("ESP", 10)
-local aimTabButton = createTabButton("AIM", 75)
-local movementTabButton = createTabButton("MOVE", 140)
-local settingsTabButton = createTabButton("SET", 205)
+local aimTabButton = createTabButton("AIM", 52)
+local triggerTabButton = createTabButton("TRIG", 94)
+local movementTabButton = createTabButton("MOVE", 136)
+local settingsTabButton = createTabButton("SET", 178)
+local teleportTabButton = createTabButton("TELE", 220)
 
 local function createToggleButton(name, positionY, parent)
 	local button = Instance.new("TextButton")
@@ -276,7 +313,7 @@ end
 
 local function createValueSlider(name, positionY, parent, minimum, maximum, step, initialValue)
 	local container = Instance.new("Frame")
-	container.Name = name:gsub("%s", "") .. "Slider"
+	container.Name = name:gsub("[%s%(%)]", "") .. "Slider"
 	container.Size = UDim2.new(1, -20, 0, 48)
 	container.Position = UDim2.fromOffset(10, positionY)
 	container.BackgroundTransparency = 1
@@ -333,12 +370,22 @@ end
 
 local highlightButton = createToggleButton("Highlights", 2, espPage)
 local infoButton = createToggleButton("Names and Health", 46, espPage)
-local skeletonButton = createToggleButton("Skeleton ESP", 90, espPage)
-local squareButton = createToggleButton("Square ESP", 134, espPage)
+local squareButton = createToggleButton("Square ESP", 90, espPage)
 local aimButton = createToggleButton("Aim Assist", 2, aimPage)
 local targetPartButton = createToggleButton("Target Part", 46, aimPage)
 local showFOVButton = createToggleButton("Show FOV", 90, aimPage)
 local wallCheckButton = createToggleButton("Wall Check", 134, aimPage)
+
+-- Trigger page
+local triggerBotButton = createToggleButton("Trigger Bot", 2, triggerPage)
+local triggerBotFOVSlider = createValueSlider("Trigger FOV (px)", 46, triggerPage, 1, 30, 1, 15)
+local triggerBotDelaySlider = createValueSlider("Trigger Delay", 100, triggerPage, 0, 0.5, 0.05, 0)
+
+-- Trigger keybind buttons
+local triggerToggleKeyButton = createToggleButton("Toggle Trigger Bot: T", 152, triggerPage)
+local triggerFOVUpKeyButton = createToggleButton("FOV Up Key: =", 196, triggerPage)
+local triggerFOVDownKeyButton = createToggleButton("FOV Down Key: -", 240, triggerPage)
+
 local aimKeyButton = createToggleButton("Aim Toggle Key: Q", 2, settingsPage)
 local aimKeyHelpLabel = Instance.new("TextLabel")
 aimKeyHelpLabel.Size = UDim2.new(1, -20, 0, 36)
@@ -352,7 +399,6 @@ aimKeyHelpLabel.TextWrapped = true
 aimKeyHelpLabel.TextXAlignment = Enum.TextXAlignment.Left
 aimKeyHelpLabel.Parent = settingsPage
 
--- Panel visibility toggle key button (new)
 local panelKeyButton = createToggleButton("Panel Toggle Key: RightShift", 96, settingsPage)
 local panelKeyHelpLabel = Instance.new("TextLabel")
 panelKeyHelpLabel.Size = UDim2.new(1, -20, 0, 36)
@@ -462,12 +508,16 @@ local function updateToggleButton(button, name, enabled)
 	button.BackgroundColor3 = enabled and theme.AccentActive or theme.Surface
 end
 
--- Panel show/hide
+local function updateTriggerFOVCircle()
+	triggerFOVCircle.Size = UDim2.fromOffset(triggerBotFOV * 2, triggerBotFOV * 2)
+	triggerFOVCircle.Visible = panelVisible and triggerBotEnabled
+end
+
 local function setPanelVisible(visible)
 	panelVisible = visible
 	panel.Visible = visible
-	-- FOV circle should still follow its own rules when the panel is hidden
 	fovCircle.Visible = visible and aimPage.Visible and showFOVEnabled
+	triggerFOVCircle.Visible = visible and triggerBotEnabled
 end
 
 local function refreshAimPlayerList()
@@ -527,7 +577,6 @@ end
 
 updateToggleButton(highlightButton, "Highlights", espEnabled)
 updateToggleButton(infoButton, "Names and Health", infoEspEnabled)
-updateToggleButton(skeletonButton, "Skeleton ESP", skeletonEspEnabled)
 updateToggleButton(squareButton, "Square ESP", squareEspEnabled)
 
 local function removeHighlight(player)
@@ -566,88 +615,6 @@ local function updateHighlight(player)
 	highlight.Parent = character
 	highlights[player] = highlight
 end
-
--- ============================================================================
--- SKELETON ESP (rewritten)
--- ============================================================================
-
-local function removeSkeletonESP(player)
-	local data = skeletonObjects[player]
-	if not data then
-		return
-	end
-	if data.connection then
-		data.connection:Disconnect()
-	end
-	if data.folder then
-		data.folder:Destroy()
-	end
-	skeletonObjects[player] = nil
-end
-
-local function updateSkeletonESP(player)
-	removeSkeletonESP(player)
-	if not skeletonEspEnabled or not shouldShowEspPlayer(player) then
-		return
-	end
-
-	local character = player.Character
-	if not character then
-		return
-	end
-
-	local folder = Instance.new("Folder")
-	folder.Name = "AdminSkeletonESP_" .. tostring(player.UserId)
-	folder.Parent = screenGui
-
-	local bones = {}
-	for _, joint in ipairs(character:GetDescendants()) do
-		if joint:IsA("Motor6D") and joint.Part0 and joint.Part1 then
-			local line = Instance.new("LineHandleAdornment")
-			line.Name = "Bone_" .. joint.Name
-			line.Adornee = joint.Part0
-			line.Color3 = Color3.fromRGB(80, 220, 190)
-			line.Thickness = 2
-			line.AlwaysOnTop = true
-			line.ZIndex = 5
-			line.Parent = folder
-			table.insert(bones, { joint = joint, line = line })
-		end
-	end
-
-	if #bones == 0 then
-		folder:Destroy()
-		return
-	end
-
-	local function updateBones()
-		for i = 1, #bones do
-			local entry = bones[i]
-			local motor = entry.joint
-			local part0 = motor.Part0
-			local part1 = motor.Part1
-			if motor.Parent and part0 and part1 then
-				local worldA = (part0.CFrame * motor.C0).Position
-				local worldB = (part1.CFrame * motor.C1).Position
-				local localA = part0.CFrame:PointToObjectSpace(worldA)
-				local localB = part0.CFrame:PointToObjectSpace(worldB)
-				entry.line.From = localA
-				entry.line.To = localB
-			end
-		end
-	end
-
-	updateBones()
-
-	skeletonObjects[player] = {
-		folder = folder,
-		connection = RunService.RenderStepped:Connect(updateBones),
-	}
-end
-
--- ============================================================================
--- END SKELETON ESP
--- ============================================================================
 
 local function removeSquareESP(player)
 	local box = squareObjects[player]
@@ -694,7 +661,15 @@ local function removeInfoESP(player)
 	if data.maxHealthConnection then
 		data.maxHealthConnection:Disconnect()
 	end
-	data.billboard:Destroy()
+	if data.diedConnection then
+		data.diedConnection:Disconnect()
+	end
+	if data.characterConnection then
+		data.characterConnection:Disconnect()
+	end
+	if data.billboard then
+		data.billboard:Destroy()
+	end
 	infoEspObjects[player] = nil
 end
 
@@ -705,9 +680,23 @@ local function updateInfoESP(player)
 	end
 
 	local character = player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	local anchor = character and (character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart"))
-	if not humanoid or not anchor then
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return
+	end
+
+	local function pickAnchor()
+		return character:FindFirstChild("Head")
+			or character:FindFirstChild("HumanoidRootPart")
+			or character:FindFirstChild("UpperTorso")
+	end
+
+	local anchor = pickAnchor()
+	if not anchor then
 		return
 	end
 
@@ -761,12 +750,25 @@ local function updateInfoESP(player)
 	barFillCorner.CornerRadius = UDim.new(0, 3)
 	barFillCorner.Parent = barFill
 
-	local function updateHealthDisplay(health)
-		local maxHealth = humanoid.MaxHealth
-		local clampedHealth = math.clamp(health, 0, maxHealth)
-		local ratio = (maxHealth > 0) and (clampedHealth / maxHealth) or 0
+	local function updateHealthDisplay()
+		if not humanoid or not humanoid.Parent then
+			return
+		end
 
+		local rawHealth = humanoid.Health
+		local rawMax = humanoid.MaxHealth
+
+		if rawMax <= 0 or rawMax ~= rawMax then
+			barFill.Size = UDim2.new(0, 0, 1, 0)
+			barFill.BackgroundColor3 = Color3.fromRGB(230, 70, 70)
+			hpLabel.Text = string.format("0 / %d", math.max(0, math.floor(rawMax)))
+			return
+		end
+
+		local health = math.clamp(rawHealth, 0, rawMax)
+		local ratio = math.clamp(health / rawMax, 0, 1)
 		barFill.Size = UDim2.new(ratio, 0, 1, 0)
+
 		if ratio > 0.6 then
 			barFill.BackgroundColor3 = Color3.fromRGB(80, 220, 100)
 		elseif ratio > 0.3 then
@@ -775,20 +777,34 @@ local function updateInfoESP(player)
 			barFill.BackgroundColor3 = Color3.fromRGB(230, 70, 70)
 		end
 
-		hpLabel.Text = string.format("%d / %d", math.floor(clampedHealth + 0.5), math.floor(maxHealth + 0.5))
+		hpLabel.Text = string.format("%d / %d", math.floor(health + 0.5), math.floor(rawMax + 0.5))
 	end
 
-	updateHealthDisplay(humanoid.Health)
+	updateHealthDisplay()
 
 	local healthConnection = humanoid.HealthChanged:Connect(updateHealthDisplay)
 	local maxHealthConnection = humanoid:GetPropertyChangedSignal("MaxHealth"):Connect(function()
-		updateHealthDisplay(humanoid.Health)
+		updateHealthDisplay()
+	end)
+	local diedConnection = humanoid.Died:Connect(function()
+		updateHealthDisplay()
+	end)
+
+	local characterConnection = character.ChildRemoved:Connect(function(child)
+		if child == billboard.Adornee then
+			local newAnchor = pickAnchor()
+			if newAnchor then
+				billboard.Adornee = newAnchor
+			end
+		end
 	end)
 
 	infoEspObjects[player] = {
 		billboard = billboard,
 		healthConnection = healthConnection,
 		maxHealthConnection = maxHealthConnection,
+		diedConnection = diedConnection,
+		characterConnection = characterConnection,
 	}
 end
 
@@ -798,13 +814,11 @@ local function watchPlayer(player)
 			for _, target in ipairs(Players:GetPlayers()) do
 				updateHighlight(target)
 				updateInfoESP(target)
-				updateSkeletonESP(target)
 				updateSquareESP(target)
 			end
 		else
 			updateHighlight(player)
 			updateInfoESP(player)
-			updateSkeletonESP(player)
 			updateSquareESP(player)
 		end
 	end)
@@ -817,7 +831,6 @@ local function watchPlayer(player)
 		task.wait()
 		updateHighlight(player)
 		updateInfoESP(player)
-		updateSkeletonESP(player)
 		updateSquareESP(player)
 		if player == localPlayer then
 			rememberMovementDefaults(humanoid)
@@ -827,12 +840,10 @@ local function watchPlayer(player)
 	player.CharacterRemoving:Connect(function()
 		removeHighlight(player)
 		removeInfoESP(player)
-		removeSkeletonESP(player)
 		removeSquareESP(player)
 	end)
 	updateHighlight(player)
 	updateInfoESP(player)
-	updateSkeletonESP(player)
 	updateSquareESP(player)
 	if player == localPlayer then
 		local humanoid = getLocalHumanoid()
@@ -853,7 +864,6 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	removeHighlight(player)
 	removeInfoESP(player)
-	removeSkeletonESP(player)
 	removeSquareESP(player)
 	task.defer(refreshAimPlayerList)
 end)
@@ -874,14 +884,6 @@ infoButton.Activated:Connect(function()
 	end
 end)
 
-skeletonButton.Activated:Connect(function()
-	skeletonEspEnabled = not skeletonEspEnabled
-	updateToggleButton(skeletonButton, "Skeleton ESP", skeletonEspEnabled)
-	for _, player in ipairs(Players:GetPlayers()) do
-		updateSkeletonESP(player)
-	end
-end)
-
 squareButton.Activated:Connect(function()
 	squareEspEnabled = not squareEspEnabled
 	updateToggleButton(squareButton, "Square ESP", squareEspEnabled)
@@ -893,13 +895,18 @@ end)
 local function showPage(pageName)
 	espPage.Visible = pageName == "ESP"
 	aimPage.Visible = pageName == "Aim"
+	triggerPage.Visible = pageName == "Trigger"
 	movementPage.Visible = pageName == "Movement"
 	settingsPage.Visible = pageName == "Settings"
+	teleportPage.Visible = pageName == "Teleport"
 	fovCircle.Visible = panelVisible and pageName == "Aim" and showFOVEnabled
+	triggerFOVCircle.Visible = panelVisible and triggerBotEnabled
 	espTabButton.BackgroundColor3 = pageName == "ESP" and theme.AccentActive or theme.Surface
 	aimTabButton.BackgroundColor3 = pageName == "Aim" and theme.AccentActive or theme.Surface
+	triggerTabButton.BackgroundColor3 = pageName == "Trigger" and theme.AccentActive or theme.Surface
 	movementTabButton.BackgroundColor3 = pageName == "Movement" and theme.AccentActive or theme.Surface
 	settingsTabButton.BackgroundColor3 = pageName == "Settings" and theme.AccentActive or theme.Surface
+	teleportTabButton.BackgroundColor3 = pageName == "Teleport" and theme.AccentActive or theme.Surface
 end
 
 espTabButton.Activated:Connect(function()
@@ -910,12 +917,20 @@ aimTabButton.Activated:Connect(function()
 	showPage("Aim")
 end)
 
+triggerTabButton.Activated:Connect(function()
+	showPage("Trigger")
+end)
+
 movementTabButton.Activated:Connect(function()
 	showPage("Movement")
 end)
 
 settingsTabButton.Activated:Connect(function()
 	showPage("Settings")
+end)
+
+teleportTabButton.Activated:Connect(function()
+	showPage("Teleport")
 end)
 
 showPage("ESP")
@@ -968,7 +983,13 @@ local function setMovementSliderValue(slider, value, applyValue)
 	value = math.clamp(slider.Minimum + stepCount * slider.Step, slider.Minimum, slider.Maximum)
 	slider.Value = value
 	local ratio = (value - slider.Minimum) / (slider.Maximum - slider.Minimum)
-	slider.Label.Text = string.format("%s: %d", slider.Name, value)
+	if slider == triggerBotFOVSlider then
+		slider.Label.Text = string.format("%s: %d px", slider.Name, value)
+	elseif slider.Step < 1 then
+		slider.Label.Text = string.format("%s: %.2f", slider.Name, value)
+	else
+		slider.Label.Text = string.format("%s: %d", slider.Name, value)
+	end
 	slider.Fill.Size = UDim2.new(ratio, 0, 1, 0)
 	slider.Knob.Position = UDim2.new(ratio, 0, 0.5, 0)
 	if applyValue then
@@ -976,8 +997,13 @@ local function setMovementSliderValue(slider, value, applyValue)
 			applyWalkSpeed(value)
 		elseif slider == jumpPowerSlider then
 			applyJumpPower(value)
-		else
+		elseif slider == flySpeedSlider then
 			flySpeed = value
+		elseif slider == triggerBotFOVSlider then
+			triggerBotFOV = math.clamp(value, 1, 30)
+			updateTriggerFOVCircle()
+		elseif slider == triggerBotDelaySlider then
+			triggerBotDelay = value
 		end
 	end
 end
@@ -1021,6 +1047,8 @@ end
 connectMovementSlider(walkSpeedSlider)
 connectMovementSlider(jumpPowerSlider)
 connectMovementSlider(flySpeedSlider)
+connectMovementSlider(triggerBotFOVSlider)
+connectMovementSlider(triggerBotDelaySlider)
 
 fovSliderTrack.InputBegan:Connect(function(input)
 	beginFOVDrag(input, fovSliderTrack)
@@ -1077,9 +1105,11 @@ local function updateAimControls()
 	updateToggleButton(aimButton, "Aim Assist", aimAssistEnabled)
 	updateToggleButton(showFOVButton, "Show FOV", showFOVEnabled)
 	updateToggleButton(wallCheckButton, "Wall Check", wallCheckEnabled)
+	updateToggleButton(triggerBotButton, "Trigger Bot", triggerBotEnabled)
 	targetPartButton.Text = "Target Part: " .. targetParts[targetPartIndex]
 	targetPartButton.BackgroundColor3 = theme.Surface
 	fovCircle.Visible = panelVisible and aimPage.Visible and showFOVEnabled
+	triggerFOVCircle.Visible = panelVisible and triggerBotEnabled
 end
 
 local function updateMovementControls()
@@ -1313,6 +1343,154 @@ local function setAimAssistEnabled(enabled)
 	end
 end
 
+-- ============================================================================
+-- TRIGGER BOT (pixel FOV, multi-part hitbox scan, short cooldown)
+-- ============================================================================
+local triggerAimPartsR6 = { "Head", "Torso" }
+local triggerAimPartsR15 = {
+	"Head",
+	"UpperTorso",
+	"LowerTorso",
+	"LeftUpperArm", "LeftLowerArm", "LeftHand",
+	"RightUpperArm", "RightLowerArm", "RightHand",
+	"LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+	"RightUpperLeg", "RightLowerLeg", "RightFoot",
+}
+
+local function getTriggerScanParts(character)
+	local parts = {}
+	local isR15 = character:FindFirstChild("UpperTorso") ~= nil
+	if isR15 then
+		for _, name in ipairs(triggerAimPartsR15) do
+			local p = character:FindFirstChild(name)
+			if p and p:IsA("BasePart") then
+				table.insert(parts, p)
+			end
+		end
+	else
+		for _, name in ipairs(triggerAimPartsR6) do
+			local p = character:FindFirstChild(name)
+			if p and p:IsA("BasePart") then
+				table.insert(parts, p)
+			end
+		end
+	end
+	if #parts == 0 then
+		local root = character:FindFirstChild("HumanoidRootPart")
+		if root then
+			table.insert(parts, root)
+		end
+	end
+	return parts
+end
+
+local function getClosestPlayerToCrosshair(maxPixels)
+	local camera = workspace.CurrentCamera
+	if not camera or not localPlayer.Character then
+		return nil
+	end
+
+	local viewportCenter = camera.ViewportSize / 2
+	local origin = camera.CFrame.Position
+
+	if wallCheckEnabled then
+		aimRaycastParams.FilterDescendantsInstances = { localPlayer.Character }
+	end
+
+	local bestPlayer
+	local bestPixelDist = maxPixels
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= localPlayer
+			and player.Parent == Players
+			and not excludedUserIds[player.UserId] then
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				local parts = getTriggerScanParts(character)
+				for _, part in ipairs(parts) do
+					local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+					if onScreen then
+						local offset = Vector2.new(screenPos.X, screenPos.Y) - viewportCenter
+						local pixelDist = offset.Magnitude
+						if pixelDist <= bestPixelDist then
+							if wallCheckEnabled then
+								local toPart = part.Position - origin
+								local hit = workspace:Raycast(origin, toPart, aimRaycastParams)
+								if hit and not hit.Instance:IsDescendantOf(character) then
+									continue
+								end
+							end
+							bestPixelDist = pixelDist
+							bestPlayer = player
+						end
+					end
+				end
+			end
+		end
+	end
+	return bestPlayer
+end
+
+local function fireWeapon()
+	local character = localPlayer.Character
+	if not character then
+		return
+	end
+	local tool = character:FindFirstChildOfClass("Tool")
+	if tool then
+		tool:Activate()
+	else
+		local vim = game:GetService("VirtualInputManager")
+		vim:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+		vim:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+	end
+end
+
+local triggerBotConnection
+
+local function updateTriggerBot()
+	if not triggerBotEnabled then
+		return
+	end
+	local now = os.clock()
+	if now < triggerBotNextFire then
+		return
+	end
+	local target = getClosestPlayerToCrosshair(triggerBotFOV)
+	if target then
+		if triggerBotDelay > 0 then
+			triggerBotNextFire = now + triggerBotDelay
+			task.delay(triggerBotDelay, function()
+				if triggerBotEnabled then
+					fireWeapon()
+				end
+			end)
+		else
+			triggerBotNextFire = now + triggerBotCooldown
+			fireWeapon()
+		end
+	end
+end
+
+local function setTriggerBotEnabled(enabled)
+	triggerBotEnabled = enabled
+	if enabled then
+		if not triggerBotConnection then
+			triggerBotConnection = RunService.RenderStepped:Connect(updateTriggerBot)
+		end
+	else
+		if triggerBotConnection then
+			triggerBotConnection:Disconnect()
+			triggerBotConnection = nil
+		end
+	end
+	updateAimControls()
+	triggerFOVCircle.Visible = panelVisible and triggerBotEnabled
+end
+-- ============================================================================
+-- END TRIGGER BOT
+-- ============================================================================
+
 aimButton.Activated:Connect(function()
 	setAimAssistEnabled(not aimAssistEnabled)
 end)
@@ -1325,6 +1503,18 @@ local function updatePanelKeyButton()
 	panelKeyButton.Text = waitingForPanelToggleKey and "Press a key..." or "Panel Toggle Key: " .. panelToggleKey.Name
 end
 
+local function updateTriggerToggleKeyButton()
+	triggerToggleKeyButton.Text = waitingForTriggerToggleKey and "Press a key..." or "Toggle Trigger Bot: " .. triggerToggleKey.Name
+end
+
+local function updateTriggerFOVUpKeyButton()
+	triggerFOVUpKeyButton.Text = waitingForTriggerFOVUpKey and "Press a key..." or "FOV Up Key: " .. triggerFOVUpKey.Name
+end
+
+local function updateTriggerFOVDownKeyButton()
+	triggerFOVDownKeyButton.Text = waitingForTriggerFOVDownKey and "Press a key..." or "FOV Down Key: " .. triggerFOVDownKey.Name
+end
+
 aimKeyButton.Activated:Connect(function()
 	waitingForAimToggleKey = true
 	updateAimKeyButton()
@@ -1335,8 +1525,67 @@ panelKeyButton.Activated:Connect(function()
 	updatePanelKeyButton()
 end)
 
+triggerToggleKeyButton.Activated:Connect(function()
+	waitingForTriggerToggleKey = true
+	updateTriggerToggleKeyButton()
+end)
+
+triggerFOVUpKeyButton.Activated:Connect(function()
+	waitingForTriggerFOVUpKey = true
+	updateTriggerFOVUpKeyButton()
+end)
+
+triggerFOVDownKeyButton.Activated:Connect(function()
+	waitingForTriggerFOVDownKey = true
+	updateTriggerFOVDownKeyButton()
+end)
+
 local aimKeyInputConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	-- Panel toggle key capture mode
+	if waitingForTriggerToggleKey and input.UserInputType == Enum.UserInputType.Keyboard then
+		if UserInputService:GetFocusedTextBox() then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.Escape then
+			waitingForTriggerToggleKey = false
+			updateTriggerToggleKeyButton()
+		elseif input.KeyCode ~= Enum.KeyCode.Unknown then
+			triggerToggleKey = input.KeyCode
+			waitingForTriggerToggleKey = false
+			updateTriggerToggleKeyButton()
+		end
+		return
+	end
+
+	if waitingForTriggerFOVUpKey and input.UserInputType == Enum.UserInputType.Keyboard then
+		if UserInputService:GetFocusedTextBox() then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.Escape then
+			waitingForTriggerFOVUpKey = false
+			updateTriggerFOVUpKeyButton()
+		elseif input.KeyCode ~= Enum.KeyCode.Unknown then
+			triggerFOVUpKey = input.KeyCode
+			waitingForTriggerFOVUpKey = false
+			updateTriggerFOVUpKeyButton()
+		end
+		return
+	end
+
+	if waitingForTriggerFOVDownKey and input.UserInputType == Enum.UserInputType.Keyboard then
+		if UserInputService:GetFocusedTextBox() then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.Escape then
+			waitingForTriggerFOVDownKey = false
+			updateTriggerFOVDownKeyButton()
+		elseif input.KeyCode ~= Enum.KeyCode.Unknown then
+			triggerFOVDownKey = input.KeyCode
+			waitingForTriggerFOVDownKey = false
+			updateTriggerFOVDownKeyButton()
+		end
+		return
+	end
+
 	if waitingForPanelToggleKey and input.UserInputType == Enum.UserInputType.Keyboard then
 		if UserInputService:GetFocusedTextBox() then
 			return
@@ -1352,7 +1601,6 @@ local aimKeyInputConnection = UserInputService.InputBegan:Connect(function(input
 		return
 	end
 
-	-- Aim key capture mode
 	if waitingForAimToggleKey and input.UserInputType == Enum.UserInputType.Keyboard then
 		if UserInputService:GetFocusedTextBox() then
 			return
@@ -1368,12 +1616,25 @@ local aimKeyInputConnection = UserInputService.InputBegan:Connect(function(input
 		return
 	end
 
-	-- Normal key handling
 	if not gameProcessed
 		and not UserInputService:GetFocusedTextBox()
 		and input.UserInputType == Enum.UserInputType.Keyboard then
 		if input.KeyCode == panelToggleKey then
 			setPanelVisible(not panelVisible)
+			return
+		end
+		if input.KeyCode == triggerToggleKey then
+			setTriggerBotEnabled(not triggerBotEnabled)
+			return
+		end
+		if input.KeyCode == triggerFOVUpKey then
+			triggerBotFOV = math.clamp(triggerBotFOV + 1, 1, 30)
+			setMovementSliderValue(triggerBotFOVSlider, triggerBotFOV, true)
+			return
+		end
+		if input.KeyCode == triggerFOVDownKey then
+			triggerBotFOV = math.clamp(triggerBotFOV - 1, 1, 30)
+			setMovementSliderValue(triggerBotFOVSlider, triggerBotFOV, true)
 			return
 		end
 		if input.KeyCode == aimToggleKey then
@@ -1396,6 +1657,10 @@ end)
 wallCheckButton.Activated:Connect(function()
 	wallCheckEnabled = not wallCheckEnabled
 	updateAimControls()
+end)
+
+triggerBotButton.Activated:Connect(function()
+	setTriggerBotEnabled(not triggerBotEnabled)
 end)
 
 infiniteJumpButton.Activated:Connect(function()
@@ -1442,8 +1707,292 @@ end
 
 resetMovementButton.Activated:Connect(resetMovement)
 
+-- Forward decls so the wrapped TELEPORT PAGE section can expose these
+-- without adding locals to the top-level chunk.
+local stopTeleportFollow
+local refreshTeleportPlayerList
+
+-- ============================================================================
+-- TELEPORT PAGE (wrapped in a do-block so its locals don't hit the 200 cap)
+-- ============================================================================
+do
+	local teleportFollowConnection
+	local teleportFollowTarget
+	local teleportHeight = 6
+	local teleportWallCheck = true
+	local teleportMaxDistance = 2000
+
+	local function updateTeleportControls()
+		updateToggleButton(teleportStopButton, "Stop Following", teleportFollowConnection ~= nil)
+		updateToggleButton(teleportWallCheckButton, "Wall Check", teleportWallCheck)
+	end
+
+	local function getTeleportRoot()
+		local character = localPlayer.Character
+		return character and character:FindFirstChild("HumanoidRootPart"), character
+	end
+
+	local function isValidTeleportTarget(player)
+		if player == localPlayer or player.Parent ~= Players then
+			return false
+		end
+		if excludedUserIds[player.UserId] then
+			return false
+		end
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or humanoid.Health <= 0 or not root then
+			return false
+		end
+		return true, character, root
+	end
+
+	local function canSeeTeleportTarget(myRoot, targetRoot)
+		if not teleportWallCheck then
+			return true
+		end
+		local origin = myRoot.Position + Vector3.new(0, 1, 0)
+		local direction = targetRoot.Position - origin
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { localPlayer.Character }
+		params.IgnoreWater = true
+		local hit = workspace:Raycast(origin, direction, params)
+		return hit == nil or hit.Instance:IsDescendantOf(targetRoot.Parent)
+	end
+
+	stopTeleportFollow = function()
+		if teleportFollowConnection then
+			teleportFollowConnection:Disconnect()
+			teleportFollowConnection = nil
+		end
+		teleportFollowTarget = nil
+		local character = localPlayer.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.PlatformStand = false
+		end
+		updateTeleportControls()
+	end
+
+	local function startTeleportFollow(targetPlayer)
+		stopTeleportFollow()
+		if not targetPlayer then
+			return
+		end
+		local myRoot, myCharacter = getTeleportRoot()
+		if not myRoot then
+			return
+		end
+		local humanoid = myCharacter:FindFirstChildOfClass("Humanoid")
+		if not humanoid then
+			return
+		end
+
+		teleportFollowTarget = targetPlayer
+		humanoid.PlatformStand = true
+
+		teleportFollowConnection = RunService.Heartbeat:Connect(function()
+			if not teleportFollowTarget or teleportFollowTarget.Parent ~= Players then
+				stopTeleportFollow()
+				return
+			end
+			local myRootNow, myCharacterNow = getTeleportRoot()
+			if not myRootNow then
+				stopTeleportFollow()
+				return
+			end
+			local ok, _, targetRoot = isValidTeleportTarget(teleportFollowTarget)
+			if not ok or not targetRoot then
+				stopTeleportFollow()
+				return
+			end
+
+			local humanoidNow = myCharacterNow:FindFirstChildOfClass("Humanoid")
+			if not humanoidNow or humanoidNow.Health <= 0 then
+				stopTeleportFollow()
+				return
+			end
+
+			local distance = (myRootNow.Position - targetRoot.Position).Magnitude
+			if distance > teleportMaxDistance then
+				stopTeleportFollow()
+				return
+			end
+
+			if not canSeeTeleportTarget(myRootNow, targetRoot) then
+				return
+			end
+
+			myRootNow.CFrame = targetRoot.CFrame + Vector3.new(0, teleportHeight, 0)
+			myRootNow.AssemblyLinearVelocity = Vector3.zero
+		end)
+
+		updateTeleportControls()
+	end
+
+	local function teleportToPlayer(targetPlayer)
+		local myRoot = getTeleportRoot()
+		if not myRoot then
+			return
+		end
+		local ok, _, targetRoot = isValidTeleportTarget(targetPlayer)
+		if not ok or not targetRoot then
+			return
+		end
+		myRoot.CFrame = targetRoot.CFrame + Vector3.new(0, teleportHeight, 0)
+	end
+
+	local function nearestTeleportTarget()
+		local myRoot = getTeleportRoot()
+		if not myRoot then
+			return nil
+		end
+		local best, bestDist = nil, math.huge
+		for _, player in ipairs(Players:GetPlayers()) do
+			local ok, _, targetRoot = isValidTeleportTarget(player)
+			if ok and targetRoot then
+				local d = (myRoot.Position - targetRoot.Position).Magnitude
+				if d <= teleportMaxDistance and d < bestDist and canSeeTeleportTarget(myRoot, targetRoot) then
+					best = player
+					bestDist = d
+				end
+			end
+		end
+		return best
+	end
+
+	-- UI: target selection list
+	local teleportTargetLabel = Instance.new("TextLabel")
+	teleportTargetLabel.Size = UDim2.new(1, -20, 0, 16)
+	teleportTargetLabel.Position = UDim2.fromOffset(10, 2)
+	teleportTargetLabel.BackgroundTransparency = 1
+	teleportTargetLabel.Text = "TARGETS  /  CLICK TO TELEPORT"
+	teleportTargetLabel.TextColor3 = theme.Accent
+	teleportTargetLabel.Font = Enum.Font.GothamBold
+	teleportTargetLabel.TextSize = 10
+	teleportTargetLabel.TextXAlignment = Enum.TextXAlignment.Left
+	teleportTargetLabel.Parent = teleportPage
+
+	local teleportPlayerList = Instance.new("ScrollingFrame")
+	teleportPlayerList.Name = "TeleportPlayerList"
+	teleportPlayerList.Position = UDim2.fromOffset(10, 20)
+	teleportPlayerList.Size = UDim2.new(1, -20, 0, 120)
+	teleportPlayerList.BackgroundColor3 = theme.Surface
+	teleportPlayerList.BorderSizePixel = 0
+	teleportPlayerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+	teleportPlayerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	teleportPlayerList.ScrollBarThickness = 5
+	teleportPlayerList.ScrollBarImageColor3 = theme.Accent
+	teleportPlayerList.Parent = teleportPage
+
+	local teleportListCorner = Instance.new("UICorner")
+	teleportListCorner.CornerRadius = UDim.new(0, 6)
+	teleportListCorner.Parent = teleportPlayerList
+
+	local teleportListLayout = Instance.new("UIListLayout")
+	teleportListLayout.Padding = UDim.new(0, 4)
+	teleportListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	teleportListLayout.Parent = teleportPlayerList
+
+	local teleportListPadding = Instance.new("UIPadding")
+	teleportListPadding.PaddingTop = UDim.new(0, 4)
+	teleportListPadding.PaddingBottom = UDim.new(0, 4)
+	teleportListPadding.PaddingLeft = UDim.new(0, 4)
+	teleportListPadding.PaddingRight = UDim.new(0, 4)
+	teleportListPadding.Parent = teleportPlayerList
+
+	refreshTeleportPlayerList = function()
+		for _, child in ipairs(teleportPlayerList:GetChildren()) do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+		local players = Players:GetPlayers()
+		table.sort(players, function(a, b)
+			return string.lower(a.Name) < string.lower(b.Name)
+		end)
+		for index, player in ipairs(players) do
+			if player ~= localPlayer then
+				local listed = player
+				local row = Instance.new("TextButton")
+				row.Name = "TP_" .. tostring(listed.UserId)
+				row.LayoutOrder = index
+				row.Size = UDim2.new(1, -8, 0, 26)
+				row.BackgroundColor3 = theme.Panel
+				row.BorderSizePixel = 0
+				row.Text = listed.DisplayName .. "  (@" .. listed.Name .. ")"
+				row.TextColor3 = theme.Text
+				row.TextXAlignment = Enum.TextXAlignment.Left
+				row.Font = Enum.Font.GothamSemibold
+				row.TextSize = 11
+				row.Parent = teleportPlayerList
+				local c = Instance.new("UICorner")
+				c.CornerRadius = UDim.new(0, 5)
+				c.Parent = row
+				row.Activated:Connect(function()
+					teleportToPlayer(listed)
+				end)
+			end
+		end
+	end
+
+	-- Buttons
+	local teleportToNearestButton = createToggleButton("Teleport to Nearest", 148, teleportPage)
+	local teleportFollowButton = createToggleButton("Follow Nearest", 192, teleportPage)
+	local teleportStopButton = createToggleButton("Stop Following", 236, teleportPage)
+	local teleportWallCheckButton = createToggleButton("Wall Check", 280, teleportPage)
+
+	teleportToNearestButton.Activated:Connect(function()
+		local target = nearestTeleportTarget()
+		if target then
+			teleportToPlayer(target)
+		end
+	end)
+
+	teleportFollowButton.Activated:Connect(function()
+		if teleportFollowConnection then
+			stopTeleportFollow()
+		else
+			local target = nearestTeleportTarget()
+			if target then
+				startTeleportFollow(target)
+			end
+		end
+	end)
+
+	teleportStopButton.Activated:Connect(function()
+		stopTeleportFollow()
+	end)
+
+	teleportWallCheckButton.Activated:Connect(function()
+		teleportWallCheck = not teleportWallCheck
+		updateTeleportControls()
+	end)
+
+	refreshTeleportPlayerList()
+	updateTeleportControls()
+end
+-- ============================================================================
+-- END TELEPORT PAGE
+-- ============================================================================
+
+-- Wrap refreshAimPlayerList so the TELE list refreshes alongside the AIM list
+do
+	local _refreshAimOriginal = refreshAimPlayerList
+	refreshAimPlayerList = function()
+		_refreshAimOriginal()
+		refreshTeleportPlayerList()
+	end
+end
+
 screenGui.Destroying:Connect(function()
+	stopTeleportFollow()
 	RunService:UnbindFromRenderStep("AdminAimAssist")
+	if triggerBotConnection then
+		triggerBotConnection:Disconnect()
+	end
 	setNoclipEnabled(false)
 	setFlyEnabled(false)
 	if noclipRespawnConnection then
@@ -1466,17 +2015,22 @@ end)
 updateAimControls()
 updateAimKeyButton()
 updatePanelKeyButton()
+updateTriggerToggleKeyButton()
+updateTriggerFOVUpKeyButton()
+updateTriggerFOVDownKeyButton()
 setMovementSliderValue(walkSpeedSlider, movementWalkSpeed, false)
 setMovementSliderValue(jumpPowerSlider, movementJumpPower, false)
 updateMovementControls()
 setMovementSliderValue(flySpeedSlider, flySpeed, false)
+setMovementSliderValue(triggerBotFOVSlider, triggerBotFOV, false)
+setMovementSliderValue(triggerBotDelaySlider, triggerBotDelay, false)
 setFOVSize(aimFOVSize)
+updateTriggerFOVCircle()
 
--- Capture movement defaults on startup so the Reset button works
--- even if it is pressed before the first CharacterAdded fires.
 task.spawn(function()
 	local humanoid = getLocalHumanoid()
 	if humanoid then
 		rememberMovementDefaults(humanoid)
 	end
 end)
+print("executa")
