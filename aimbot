@@ -2033,4 +2033,4 @@ task.spawn(function()
 		rememberMovementDefaults(humanoid)
 	end
 end)
-print("executa")
+print("executed bro lol")
